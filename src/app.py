@@ -67,71 +67,6 @@ def validate_date_format(date_str):
 def validate_airport_code(code):
     return bool(re.match(r'^[A-Z]{3}$', code))
 
-def format_flight_data(trip, total_passengers):
-    """Format flight data in a more readable structure"""
-    formatted_data = {
-        'outbound': {
-            'origin': {
-                'code': trip.origin,
-                'name': trip.originFull
-            },
-            'destination': {
-                'code': trip.destination,
-                'name': trip.destinationFull
-            },
-            'departure': {
-                'datetime': trip.departureTime.isoformat(),
-                'formatted': trip.departureTime.strftime("%d %b %Y %H:%M")
-            }
-        },
-        'inbound': None,  # Will be populated for return flights
-        'price': {
-            'perPerson': trip.price,
-            'total': trip.price * total_passengers,
-            'formatted': f"€{(trip.price * total_passengers):.2f}"
-        }
-    }
-    return formatted_data
-
-def format_return_flight_data(trip, total_passengers):
-    """Format return flight data in a more readable structure"""
-    formatted_data = {
-        'outbound': {
-            'origin': {
-                'code': trip.outbound.origin,
-                'name': trip.outbound.originFull
-            },
-            'destination': {
-                'code': trip.outbound.destination,
-                'name': trip.outbound.destinationFull
-            },
-            'departure': {
-                'datetime': trip.outbound.departureTime.isoformat(),
-                'formatted': trip.outbound.departureTime.strftime("%d %b %Y %H:%M")
-            }
-        },
-        'inbound': {
-            'origin': {
-                'code': trip.inbound.origin,
-                'name': trip.inbound.originFull
-            },
-            'destination': {
-                'code': trip.inbound.destination,
-                'name': trip.inbound.destinationFull
-            },
-            'departure': {
-                'datetime': trip.inbound.departureTime.isoformat(),
-                'formatted': trip.inbound.departureTime.strftime("%d %b %Y %H:%M")
-            }
-        },
-        'price': {
-            'perPerson': trip.totalPrice,
-            'total': trip.totalPrice * total_passengers,
-            'formatted': f"€{(trip.totalPrice * total_passengers):.2f}"
-        }
-    }
-    return formatted_data
-
 @app.route('/api/search-flights', methods=['GET', 'OPTIONS'])
 @limiter.limit("30 per minute")
 def search_flights():
@@ -224,40 +159,82 @@ def search_flights():
         
         def generate_results():
             if data['tripType'] == 'oneWay':
+                # Add a set to track unique flights
                 seen_flights = set()
                 current_date = start_date
                 while current_date <= end_date:
+                    logger.info(f"Searching one-way flights for date: {current_date}")
                     for origin_code in origin_codes:
                         try:
-                            trips = api.get_cheapest_flights(
-                                origin_code,
-                                current_date,
-                                current_date + timedelta(days=1)
-                            )
+                            logger.info(f"Searching from {origin_code} on {current_date}")
+                            try:
+                                trips = api.get_cheapest_flights(
+                                    origin_code,
+                                    current_date,
+                                    current_date + timedelta(days=1)
+                                )
+                            except Exception as api_error:
+                                logger.error(f"API Error for {origin_code}: {str(api_error)}", exc_info=True)
+                                traceback.print_exc()
+                                continue
+
+                            if not trips:
+                                logger.info(f"No trips found for {origin_code} on {current_date}")
+                                continue
+                            
+                            logger.info(f"Found {len(trips)} trips before filtering")
 
                             filtered_trips = [
                                 trip for trip in trips 
                                 if trip.price <= maximum_price 
                                 and any(country in trip.destinationFull for country in wanted_countries)
                             ]
+                            
+                            logger.info(f"Found {len(filtered_trips)} trips after filtering")
+                            
+                            if not filtered_trips:
+                                logger.info(f"No matching trips found for {origin_code} on {current_date} after filtering")
+                                continue
 
                             for trip in sorted(filtered_trips, key=lambda x: x.price):
+                                # Create a unique identifier for the flight
                                 flight_id = f"{trip.origin}-{trip.destination}-{trip.departureTime.isoformat()}"
                                 
+                                # Skip if we've already seen this flight
                                 if flight_id in seen_flights:
                                     continue
                                     
+                                # Add to seen flights
                                 seen_flights.add(flight_id)
                                 
                                 time.sleep(0.01)
-                                flight_json = format_flight_data(trip, total_passengers)
+                                flight_json = {
+                                    'outbound': {
+                                        'origin': trip.origin,
+                                        'originFull': trip.originFull,
+                                        'destination': trip.destination,
+                                        'destinationFull': trip.destinationFull,
+                                        'departureTime': trip.departureTime.isoformat(),
+                                    },
+                                    'inbound': {
+                                        'origin': trip.destination,
+                                        'originFull': trip.destinationFull,
+                                        'destination': trip.origin,
+                                        'destinationFull': trip.originFull,
+                                        'departureTime': trip.departureTime.isoformat(),
+                                    },
+                                    'totalPrice': trip.price * total_passengers
+                                }
+                                logger.info(f"Sending flight: {flight_json}")
                                 yield f"data: {json.dumps(flight_json)}\n\n"
                         except Exception as e:
                             logger.error(f"Error fetching flights for {origin_code}: {str(e)}", exc_info=True)
+                            traceback.print_exc()
                             continue
                     current_date += timedelta(days=1)
+                
+                logger.info("Finished searching one-way flights")  # Debug output
             else:
-                # Return flight logic
                 current_date = start_date
                 while current_date <= end_date:
                     for origin_code in origin_codes:
@@ -278,13 +255,30 @@ def search_flights():
                             
                             for trip in sorted(filtered_trips, key=lambda x: x.totalPrice):
                                 time.sleep(0.01)
-                                flight_json = format_return_flight_data(trip, total_passengers)
+                                flight_json = {
+                                    'outbound': {
+                                        'origin': trip.outbound.origin,
+                                        'originFull': trip.outbound.originFull,
+                                        'destination': trip.outbound.destination,
+                                        'destinationFull': trip.outbound.destinationFull,
+                                        'departureTime': trip.outbound.departureTime.isoformat(),
+                                    },
+                                    'inbound': {
+                                        'origin': trip.inbound.origin,
+                                        'originFull': trip.inbound.originFull,
+                                        'destination': trip.inbound.destination,
+                                        'destinationFull': trip.inbound.destinationFull,
+                                        'departureTime': trip.inbound.departureTime.isoformat(),
+                                    },
+                                    'totalPrice': trip.totalPrice * total_passengers
+                                }
                                 yield f"data: {json.dumps(flight_json)}\n\n"
                         except Exception as e:
                             logger.error(f"Error fetching flights for {origin_code}: {str(e)}", exc_info=True)
                             continue
                     current_date += timedelta(days=1)
             
+            # Send end message
             yield "data: END\n\n"
 
         return Response(

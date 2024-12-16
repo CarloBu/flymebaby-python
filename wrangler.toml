@@ -1,6 +1,6 @@
 name = "keepalive-flymebaby-worker"
 main = "src/workers/keepalive.ts"
-
+compatibility_date = "2024-03-19"
 
 [triggers]
 crons = ["*/14 * * * *"] 
