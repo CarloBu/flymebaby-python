@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: flight-search-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn search-flights:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: ALLOWED_ORIGINS
+        value: https://flymebaby.oaksun.studio
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+    headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains
