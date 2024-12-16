@@ -158,10 +158,9 @@ def search_flights():
         api = Ryanair("EUR")
         
         def generate_results():
-            flights_found = False  # Add a flag to track if any flights were found
+            flights_found = False  # Move flag outside both search loops
             
             if data['tripType'] == 'oneWay':
-                # Add a set to track unique flights
                 seen_flights = set()
                 current_date = start_date
                 while current_date <= end_date:
@@ -237,7 +236,7 @@ def search_flights():
                             traceback.print_exc()
                             continue
                     current_date += timedelta(days=1)
-            else:
+            else:  # return flights
                 current_date = start_date
                 while current_date <= end_date:
                     for origin_code in origin_codes:
@@ -255,6 +254,9 @@ def search_flights():
                                 if trip.totalPrice <= maximum_price 
                                 and any(country in trip.outbound.destinationFull for country in wanted_countries)
                             ]
+                            
+                            if filtered_trips:
+                                flights_found = True  # Set flag when flights are found
                             
                             for trip in sorted(filtered_trips, key=lambda x: x.totalPrice):
                                 time.sleep(0.01)
@@ -281,7 +283,7 @@ def search_flights():
                             continue
                     current_date += timedelta(days=1)
                 
-                # If no flights were found, send a NO_FLIGHTS message
+                # Move these outside both search loops
                 if not flights_found:
                     no_flights_message = {
                         "type": "NO_FLIGHTS",
@@ -289,7 +291,7 @@ def search_flights():
                     }
                     yield f"data: {json.dumps(no_flights_message)}\n\n"
                 
-                # Send end message
+                # Always send end message
                 yield "data: END\n\n"
 
         return Response(
