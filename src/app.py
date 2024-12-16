@@ -50,7 +50,7 @@ CORS(app,
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
+    default_limits=["400 per day", "100 per hour"]
 )
 
 # Add a redirect for the old path
