@@ -3,7 +3,7 @@ services:
     name: flight-search-api
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn search-flights:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn src.search-flights:app --bind 0.0.0.0:$PORT  
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0
