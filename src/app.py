@@ -158,6 +158,8 @@ def search_flights():
         api = Ryanair("EUR")
         
         def generate_results():
+            flights_found = False  # Add a flag to track if any flights were found
+            
             if data['tripType'] == 'oneWay':
                 # Add a set to track unique flights
                 seen_flights = set()
@@ -196,6 +198,9 @@ def search_flights():
                                 logger.info(f"No matching trips found for {origin_code} on {current_date} after filtering")
                                 continue
 
+                            if filtered_trips:
+                                flights_found = True  # Set flag when flights are found
+                                
                             for trip in sorted(filtered_trips, key=lambda x: x.price):
                                 # Create a unique identifier for the flight
                                 flight_id = f"{trip.origin}-{trip.destination}-{trip.departureTime.isoformat()}"
@@ -232,8 +237,6 @@ def search_flights():
                             traceback.print_exc()
                             continue
                     current_date += timedelta(days=1)
-                
-                logger.info("Finished searching one-way flights")  # Debug output
             else:
                 current_date = start_date
                 while current_date <= end_date:
@@ -277,9 +280,17 @@ def search_flights():
                             logger.error(f"Error fetching flights for {origin_code}: {str(e)}", exc_info=True)
                             continue
                     current_date += timedelta(days=1)
-            
-            # Send end message
-            yield "data: END\n\n"
+                
+                # If no flights were found, send a NO_FLIGHTS message
+                if not flights_found:
+                    no_flights_message = {
+                        "type": "NO_FLIGHTS",
+                        "message": "No flights found matching your criteria"
+                    }
+                    yield f"data: {json.dumps(no_flights_message)}\n\n"
+                
+                # Send end message
+                yield "data: END\n\n"
 
         return Response(
             generate_results(),
