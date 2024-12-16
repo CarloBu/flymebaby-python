@@ -12,6 +12,7 @@ import re
 import logging
 from logging.handlers import RotatingFileHandler
 
+
 app = Flask(__name__)
 
 # Setup logging
@@ -311,4 +312,4 @@ if __name__ == '__main__':
         )
     else:
         # In production, let Gunicorn handle the server
-        app.run() 
+        app.run(host='0.0.0.0') 

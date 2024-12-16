@@ -3,3 +3,4 @@ Flask-CORS==5.0.0
 Flask-Limiter==3.9.2
 python-dotenv==1.0.1
 ryanair-py==3.0.0
+Gunicorn==21.2.0
