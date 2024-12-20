@@ -11,6 +11,8 @@ from flask_limiter.util import get_remote_address
 import re
 import logging
 from logging.handlers import RotatingFileHandler
+from enum import Enum
+from typing import Optional
 
 
 app = Flask(__name__)
@@ -27,7 +29,7 @@ logging.basicConfig(
 
 
 
-# Replace print statements with logging
+# Replaced print statements with logging
 logger = logging.getLogger(__name__)
 
             # "origins": [
@@ -66,6 +68,38 @@ def validate_date_format(date_str):
 
 def validate_airport_code(code):
     return bool(re.match(r'^[A-Z]{3}$', code))
+
+class WeekendMode(Enum):
+    DEFAULT = "weekend"
+    RELAXED = "longWeekend"
+
+def is_valid_weekend_day(date: datetime, mode: WeekendMode, is_outbound: bool) -> bool:
+    """
+    Check if a date is valid for weekend travel based on the mode and direction.
+    
+    Args:
+        date: The date to check
+        mode: WeekendMode (weekend or longWeekend)
+        is_outbound: True if checking outbound flight, False for inbound
+    """
+    weekday = date.weekday()  # Monday is 0, Sunday is 6
+    
+    if mode == WeekendMode.DEFAULT:  # weekend
+        if is_outbound:
+            return weekday in [4, 5]  # Friday or Saturday
+        return weekday in [5, 6]  # Saturday or Sunday
+    
+    elif mode == WeekendMode.RELAXED:  # longWeekend
+        if is_outbound:
+            return weekday in [3, 4, 5]  # Thursday, Friday, or Saturday
+        return weekday in [6, 0]  # Sunday or Monday
+
+def is_valid_weekend_trip(outbound_date: datetime, inbound_date: datetime, mode: WeekendMode) -> bool:
+    """
+    Validate that both outbound and inbound flights form a valid weekend trip.
+    """
+    return (is_valid_weekend_day(outbound_date, mode, True) and 
+            is_valid_weekend_day(inbound_date, mode, False))
 
 @app.route('/api/search-flights', methods=['GET', 'OPTIONS'])
 @limiter.limit("30 per minute")
@@ -158,7 +192,7 @@ def search_flights():
         api = Ryanair("EUR")
         
         def generate_results():
-            flights_found = False  # Move flag outside both search loops
+            flights_found = False
             
             if data['tripType'] == 'oneWay':
                 seen_flights = set()
@@ -236,9 +270,18 @@ def search_flights():
                             traceback.print_exc()
                             continue
                     current_date += timedelta(days=1)
-            else:  # return flights
+            else:  # return, weekend, or longWeekend flights
                 current_date = start_date
+                weekend_mode = None
+                if data['tripType'] in ['weekend', 'longWeekend']:
+                    weekend_mode = WeekendMode(data['tripType'])
+                
                 while current_date <= end_date:
+                    # Skip non-weekend days for weekend trips
+                    if weekend_mode and not is_valid_weekend_day(current_date, weekend_mode, True):
+                        current_date += timedelta(days=1)
+                        continue
+
                     for origin_code in origin_codes:
                         try:
                             trips = api.get_cheapest_return_flights(
@@ -253,6 +296,12 @@ def search_flights():
                                 trip for trip in trips 
                                 if trip.totalPrice <= maximum_price 
                                 and any(country in trip.outbound.destinationFull for country in wanted_countries)
+                                and (not weekend_mode or 
+                                     is_valid_weekend_trip(
+                                         trip.outbound.departureTime,
+                                         trip.inbound.departureTime,
+                                         weekend_mode
+                                     ))
                             ]
                             
                             if filtered_trips:
