@@ -143,9 +143,10 @@ def search_flights():
         try:
             max_price = float(request.args.get('maxPrice', 0))
             adults = int(request.args.get('adults', 0))
+            teens = int(request.args.get('teens', 0))
             children = int(request.args.get('children', 0))
             
-            if max_price < 0 or adults < 1 or children < 0:
+            if max_price < 0 or adults < 1 or teens < 0 or children < 0:
                 raise ValueError
         except ValueError:
             return jsonify({'error': 'Invalid numeric values'}), 400
@@ -160,10 +161,11 @@ def search_flights():
             'originAirports': request.args.get('originAirports', '').split(','),
             'wantedCountries': request.args.get('wantedCountries', '').split(','),
             'adults': request.args.get('adults'),
+            'teens': request.args.get('teens'),
             'children': request.args.get('children')
         }
 
-        required_fields = ['tripType', 'startDate', 'maxPrice', 'originAirports', 'wantedCountries', 'adults', 'children']
+        required_fields = ['tripType', 'startDate', 'maxPrice', 'originAirports', 'wantedCountries', 'adults', 'teens', 'children']
         if data.get('tripType') == 'return':
             required_fields.extend(['endDate', 'minDays', 'maxDays'])
 
@@ -192,7 +194,7 @@ def search_flights():
         if not origin_codes or not wanted_countries:
             return jsonify({'error': 'Origin airports and wanted countries cannot be empty'}), 400
         
-        total_passengers = int(data['adults']) + int(data['children'])
+        total_passengers = int(data['adults']) + int(data['teens']) + int(data['children'])
         maximum_price = float(data['maxPrice']) / total_passengers  # Price per person
 
         # print the processed parameters
