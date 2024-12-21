@@ -17,7 +17,7 @@ from typing import Optional
 
 app = Flask(__name__)
 
-# Setup logging
+# Setup Flask application with logging configuration
 logging.basicConfig(
     level=logging.INFO,
     handlers=[
@@ -27,17 +27,10 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
 )
 
-
-
-# Replaced print statements with logging
 logger = logging.getLogger(__name__)
 
-            # "origins": [
-            #     "http://localhost:4321",
-            #     "http://192.168.1.149:4321",
-            #     "http://127.0.0.1:4321"
-            # ],
-# Enable CORS with specific settings
+# Configure CORS settings from environment variables
+# ALLOWED_ORIGINS should be a comma-separated list of allowed origins
 ALLOWED_ORIGINS = environ.get('ALLOWED_ORIGINS', '').split(',')
 CORS(app, 
      resources={
@@ -49,24 +42,27 @@ CORS(app,
          }
      })
 
+# Configure rate limiting to prevent API abuse
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
     default_limits=["400 per day", "100 per hour"]
 )
 
-# Add a redirect for the old path
+# Validation helper functions
 @app.route('/search-flights', methods=['GET', 'OPTIONS'])
 def redirect_search():
     return redirect(f"/api{request.full_path}", code=307)
 
 def validate_date_format(date_str):
+    """Validate if a string matches YYYY-MM-DD format"""
     try:
         return bool(datetime.strptime(date_str, '%Y-%m-%d'))
     except ValueError:
         return False
 
 def validate_airport_code(code):
+    """Validate if a string is a valid 3-letter airport code"""
     return bool(re.match(r'^[A-Z]{3}$', code))
 
 class WeekendMode(Enum):
@@ -78,25 +74,36 @@ def is_valid_weekend_day(date: datetime, mode: WeekendMode, is_outbound: bool) -
     Check if a date is valid for weekend travel based on the mode and direction.
     
     Args:
-        date: The date to check
+        date: Flight date to check
         mode: WeekendMode (weekend or longWeekend)
-        is_outbound: True if checking outbound flight, False for inbound
+        is_outbound: True for departure flights, False for return flights
+    
+    Returns:
+        bool: True if date matches weekend criteria, False otherwise
     """
     weekday = date.weekday()  # Monday is 0, Sunday is 6
     
     if mode == WeekendMode.DEFAULT:  # weekend
         if is_outbound:
-            return weekday in [4, 5]  # Friday or Saturday
-        return weekday in [5, 6]  # Saturday or Sunday
+            return weekday in [4, 5]  # Friday or Saturday departures
+        return weekday in [5, 6]      # Saturday or Sunday returns
     
     elif mode == WeekendMode.RELAXED:  # longWeekend
         if is_outbound:
-            return weekday in [3, 4, 5]  # Thursday, Friday, or Saturday
-        return weekday in [6, 0]  # Sunday or Monday
+            return weekday in [3, 4, 5]  # Thursday to Saturday departures
+        return weekday in [6, 0]         # Sunday or Monday returns
 
 def is_valid_weekend_trip(outbound_date: datetime, inbound_date: datetime, mode: WeekendMode) -> bool:
     """
-    Validate that both outbound and inbound flights form a valid weekend trip.
+    Validate that both flights form a valid weekend trip combination
+    
+    Args:
+        outbound_date: Departure flight date
+        inbound_date: Return flight date
+        mode: WeekendMode for validation criteria
+    
+    Returns:
+        bool: True if both flights form a valid weekend trip
     """
     return (is_valid_weekend_day(outbound_date, mode, True) and 
             is_valid_weekend_day(inbound_date, mode, False))
@@ -104,6 +111,15 @@ def is_valid_weekend_trip(outbound_date: datetime, inbound_date: datetime, mode:
 @app.route('/api/search-flights', methods=['GET', 'OPTIONS'])
 @limiter.limit("30 per minute")
 def search_flights():
+    """
+    Main flight search endpoint supporting:
+    - One-way flights
+    - Return flights
+    - Weekend trips
+    - Long weekend trips
+    
+    Returns a server-sent events stream of matching flights
+    """
     # Handle preflight requests
     if request.method == 'OPTIONS':
         response = app.make_default_options_response()
@@ -179,7 +195,7 @@ def search_flights():
         total_passengers = int(data['adults']) + int(data['children'])
         maximum_price = float(data['maxPrice']) / total_passengers  # Price per person
 
-        # Now print the processed parameters
+        # print the processed parameters
         logger.info(f"Search request received: {data}")
         logger.info(f"Search parameters after processing:")
         logger.info(f"Start date: {start_date}")
