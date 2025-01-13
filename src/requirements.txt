@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 Gunicorn==21.2.0 
 pytz==2024.1
 timezonefinder==6.2.0
+backoff==2.2.1
