@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, Response, redirect
 from datetime import datetime, timedelta
-from ryanair import Ryanair
+from ryanair.ryanair import Ryanair
 from flask_cors import CORS
 import json
 import time
@@ -13,6 +13,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from enum import Enum
 from typing import Optional
+from ryanair.airport_utils import convert_local_to_utc, get_airport_by_iata, load_airports
 
 
 app = Flask(__name__)
@@ -108,6 +109,30 @@ def is_valid_weekend_trip(outbound_date: datetime, inbound_date: datetime, mode:
     return (is_valid_weekend_day(outbound_date, mode, True) and 
             is_valid_weekend_day(inbound_date, mode, False))
 
+def calculate_duration(departure_time: datetime, arrival_time: datetime, origin_airport: str, destination_airport: str) -> int:
+    """
+    Calculate flight duration in minutes, accounting for timezone differences
+    
+    Args:
+        departure_time: Local departure time
+        arrival_time: Local arrival time
+        origin_airport: IATA code of departure airport
+        destination_airport: IATA code of arrival airport
+    
+    Returns:
+        int: Flight duration in minutes
+    """
+    # Ensure airports are loaded
+    load_airports()
+    
+    # Convert both times to UTC using the respective airport timezones
+    departure_utc = convert_local_to_utc(departure_time.isoformat(), origin_airport)
+    arrival_utc = convert_local_to_utc(arrival_time.isoformat(), destination_airport)
+    
+    # Calculate duration in minutes
+    duration = int((arrival_utc - departure_utc).total_seconds() / 60)
+    return duration
+
 @app.route('/api/search-flights', methods=['GET', 'OPTIONS'])
 @limiter.limit("30 per minute")
 def search_flights():
@@ -195,17 +220,10 @@ def search_flights():
             return jsonify({'error': 'Origin airports and wanted countries cannot be empty'}), 400
         
         total_passengers = int(data['adults']) + int(data['teens']) + int(data['children'])
-        maximum_price = float(data['maxPrice']) / total_passengers  # Price per person
+        maximum_price = float(data['maxPrice'])  # Total price for all passengers
 
-        # print the processed parameters
-        logger.info(f"Search request received: {data}")
-        logger.info(f"Search parameters after processing:")
-        logger.info(f"Start date: {start_date}")
-        logger.info(f"End date: {end_date}")
-        logger.info(f"Maximum price per person: {maximum_price}")
-        logger.info(f"Origin airports: {origin_codes}")
-        logger.info(f"Wanted countries: {wanted_countries}")
-        logger.info(f"Total passengers: {total_passengers}")
+        # Log a single concise line for the search request
+        logger.info(f"Search request: {data['tripType']} from {','.join(origin_codes)} to {','.join(wanted_countries)} ({start_date} - {end_date})")
 
         api = Ryanair("EUR")
         
@@ -216,15 +234,16 @@ def search_flights():
                 seen_flights = set()
                 current_date = start_date
                 while current_date <= end_date:
-                    logger.info(f"Searching one-way flights for date: {current_date}")
                     for origin_code in origin_codes:
                         try:
-                            logger.info(f"Searching from {origin_code} on {current_date}")
                             try:
                                 trips = api.get_cheapest_flights(
                                     origin_code,
                                     current_date,
-                                    current_date + timedelta(days=1)
+                                    current_date + timedelta(days=1),
+                                    adult_count=int(data['adults']),
+                                    teen_count=int(data['teens']),
+                                    child_count=int(data['children'])
                                 )
                             except Exception as api_error:
                                 logger.error(f"API Error for {origin_code}: {str(api_error)}", exc_info=True)
@@ -232,26 +251,17 @@ def search_flights():
                                 continue
 
                             if not trips:
-                                logger.info(f"No trips found for {origin_code} on {current_date}")
                                 continue
                             
-                            logger.info(f"Found {len(trips)} trips before filtering")
-
                             filtered_trips = [
                                 trip for trip in trips 
-                                if trip.price <= maximum_price 
+                                if (trip.price * total_passengers) <= maximum_price 
                                 and any(country in trip.destinationFull for country in wanted_countries)
                             ]
                             
-                            logger.info(f"Found {len(filtered_trips)} trips after filtering")
-                            
-                            if not filtered_trips:
-                                logger.info(f"No matching trips found for {origin_code} on {current_date} after filtering")
-                                continue
-
                             if filtered_trips:
-                                flights_found = True  # Set flag when flights are found
-                                
+                                flights_found = True
+                            
                             for trip in sorted(filtered_trips, key=lambda x: x.price):
                                 # Create a unique identifier for the flight
                                 flight_id = f"{trip.origin}-{trip.destination}-{trip.departureTime.isoformat()}"
@@ -294,7 +304,11 @@ def search_flights():
                 if data['tripType'] in ['weekend', 'longWeekend']:
                     weekend_mode = WeekendMode(data['tripType'])
                 
-                while current_date <= end_date:
+                # Calculate the latest possible outbound date
+                # It should be end_date minus minimum trip duration
+                latest_outbound_date = end_date - timedelta(days=min_days)
+                
+                while current_date <= latest_outbound_date:
                     # Skip non-weekend days for weekend trips
                     if weekend_mode and not is_valid_weekend_day(current_date, weekend_mode, True):
                         current_date += timedelta(days=1)
@@ -307,12 +321,15 @@ def search_flights():
                                 current_date,
                                 current_date,
                                 current_date + timedelta(days=min_days),
-                                current_date + timedelta(days=max_days)
+                                min(end_date, current_date + timedelta(days=max_days)),
+                                adult_count=int(data['adults']),
+                                teen_count=int(data['teens']),
+                                child_count=int(data['children'])
                             )
                             
                             filtered_trips = [
                                 trip for trip in trips 
-                                if trip.totalPrice <= maximum_price 
+                                if (trip.totalPrice * total_passengers) <= maximum_price 
                                 and any(country in trip.outbound.destinationFull for country in wanted_countries)
                                 and (not weekend_mode or 
                                      is_valid_weekend_trip(
@@ -320,10 +337,11 @@ def search_flights():
                                          trip.inbound.departureTime,
                                          weekend_mode
                                      ))
+                                and trip.inbound.departureTime.date() <= end_date.date()
                             ]
                             
                             if filtered_trips:
-                                flights_found = True  # Set flag when flights are found
+                                flights_found = True
                             
                             for trip in sorted(filtered_trips, key=lambda x: x.totalPrice):
                                 time.sleep(0.01)
@@ -334,6 +352,15 @@ def search_flights():
                                         'destination': trip.outbound.destination,
                                         'destinationFull': trip.outbound.destinationFull,
                                         'departureTime': trip.outbound.departureTime.isoformat(),
+                                        'arrivalTime': trip.outbound.arrivalTime.isoformat(),
+                                        'flightDuration': calculate_duration(trip.outbound.departureTime, trip.outbound.arrivalTime, trip.outbound.origin, trip.outbound.destination),
+                                        'flightNumber': trip.outbound.flightNumber,
+                                        'price': trip.outbound.price,
+                                        'currency': trip.outbound.currency,
+                                        'origin': trip.outbound.origin,
+                                        'originFull': trip.outbound.originFull,
+                                        'destination': trip.outbound.destination,
+                                        'destinationFull': trip.outbound.destinationFull,
                                     },
                                     'inbound': {
                                         'origin': trip.inbound.origin,
@@ -341,6 +368,15 @@ def search_flights():
                                         'destination': trip.inbound.destination,
                                         'destinationFull': trip.inbound.destinationFull,
                                         'departureTime': trip.inbound.departureTime.isoformat(),
+                                        'arrivalTime': trip.inbound.arrivalTime.isoformat(),
+                                        'flightDuration': calculate_duration(trip.inbound.departureTime, trip.inbound.arrivalTime, trip.inbound.origin, trip.inbound.destination),
+                                        'flightNumber': trip.inbound.flightNumber,
+                                        'price': trip.inbound.price,
+                                        'currency': trip.inbound.currency,
+                                        'origin': trip.inbound.origin,
+                                        'originFull': trip.inbound.originFull,
+                                        'destination': trip.inbound.destination,
+                                        'destinationFull': trip.inbound.destinationFull,
                                     },
                                     'totalPrice': trip.totalPrice * total_passengers
                                 }
